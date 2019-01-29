@@ -86,7 +86,7 @@ processTrainData = function(data, y){
   
   dat = data.table::copy(data)
   
-  dat$experiment = NULL
+  dat[, experiment := NULL]
   
   # coerce proper variables to categorical
   dat = coerceClass(dat, c("crew", "seat"),
@@ -143,27 +143,38 @@ processTrainData = function(data, y){
   
 }
 
-processTestData = function(data, lda_model, lda_cols){
+processTestData = function(dat, lda_model, lda_cols){
   
-  dat = data.table::copy(data)
+  # dat = data.table::copy(data)
   data.table::setDT(dat)
   
   # get rid of experiment column
-  dat$experiment = NULL
+  dat[, experiment := NULL]
   
+  cols = c("crew", "seat")
   # coerce classes to factor to code them properly
-  dat = coerceClass(dat, c("crew", "seat"), fun = as.factor)
+  dat[, (cols) := lapply(.SD, as.factor),
+      .SDcols = c("crew", "seat")]
   
-  # make predictions using lda
+  # names = names(dat)
+  # 
+  # # make predictions using lda
+  # dat = data.table::setDT(unlist(
+  #   list(dat,
+  #        predict(lda_model, dat[, ..lda_cols])$posterior
+  #        ), recursive = FALSE
+  #   ), check.names = TRUE)[]
+  # 
+  # data.table::setnames(dat, new = c(names, c("A", "B", "C", "D")))
   preds = predict(lda_model, dat[, ..lda_cols])$posterior
-  
+
   # bind predictions to test data
   dat = cbind(dat, preds)
   
   # code nominal variables to start at 0
   char_vars = names(dat)[sapply(dat, is.factor)]
-  dat = dat[, (char_vars) := lapply(.SD, multiCodeVars),
-              .SDcols = char_vars]
+  dat[, (char_vars) := lapply(.SD, multiCodeVars),
+      .SDcols = char_vars]
   
   return(dat)
 }

@@ -7,109 +7,12 @@ output: html_document
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
-devtools::load_all()
+source("R/processing.R")
 require(xgboost)
 library(data.table)
+library(MASS)
 ```
 
-
-First, read in the data
-
-```{r}
-
-readAndSplit(path = "data/train.csv",
-             target_name = "event",
-             name = "train")
-
-# x_train = fread("data/train.csv")
-
-```
-
-
-for now, run cleaning on our training set so we can replicate it on our validation set.
-
-```{r}
-set.seed(0127)
-train_ind = sample.int(n = nrow(x_train), size = .6 * nrow(x_train),
-                       replace = FALSE)
-
-train_small = x_train[train_ind]
-y_train_small = y_train[train_ind]
-
-train = processTrainData(data = train_small,
-                         y = y_train_small)
-
-rm(train_small)
-rm(y_train_small)
-
-```
-
-To properly train our model, we should remove any extreme outliers in our data set. We will use 4 standard deviations for this metric. 
-
-
-
-
-```{r}
-
-```
-
-
-
-
-
-
-create xgb.DMatrix for training
-```{r}
-# for xgboost
-# y_train_small = y_train[train_ind]
-train_small = xgboost::xgb.DMatrix(data.matrix(train$x_train),
-                                   label = multiCodeVars(train$y_train$event))
-
-```
-
-
-Create simple xgboost model
-
-```{r}
-
-nclass = 4
-
-train_params = list(
-  "objective" = "multi:softprob",
-  "eval_metric" = "mlogloss",
-  "num_class" = nclass
-  )
-
-set.seed(0127)
-xgb_train = xgboost::xgb.train(data = train_small,
-                               nround = 20,
-                               params = train_params)
-
-```
-
-
-Process our validation set
-
-```{r}
-
-val = x_train[!train_ind]
-
-val = processTestData(val, lda_mod = train$lda_mod,
-                      lda_cols = train$lda_cols)
-
-val = xgboost::xgb.DMatrix(data.matrix(val))
-
-# make predictions
-preds = formatXgbProbs(xgb_train, newdat = val)
-
-# check logloss
-MLmetrics::MultiLogLoss(preds,
-                        multiCodeVars(y_train[!train_ind]$event)
-                        )
-
-```
-
-***
 
 Now we can process the entire training set
 
@@ -122,6 +25,12 @@ readAndSplit(path = "data/train.csv",
 train = processTrainData(data = x_train,
                          y = y_train)
 
+# save lda model and the columns to a .RData file
+lda_mod = train$lda_mod
+lda_cols = train$lda_cols
+save(lda_mod, lda_cols, file = "data/lda_model.RData")
+
+# remove big files for space 
 rm(x_train)
 rm(y_train)
 
@@ -130,110 +39,18 @@ rm(y_train)
 
 train xgboost model
 
-### Hyperparameter Tuning
-
-create tuning grid
-
-```{r, eval = FALSE}
-tuneGrid = expand.grid(
-  list(
-    eta = c(.2),
-    gamma = c(0, .2),
-    max_depth = c(3, 10),
-    colsample_bytree = c(.5, .9),
-    alpha = c(0, .3),
-    min_child_weight = c(.8, 1.5)
-  )
-)
-```
-
-Run models for each parameter combination
-
-```{r, eval = FALSE}
-nclass = length(unique(y_train$event))
-
-# create vector of class labels to calculate multi class log loss
-val_labels = multiCodeVars(y_train[!train_ind]$event)
-
-
-tuning = lapply(seq_len(nrow(tuneGrid)), function(i){
-  
-  # create list of parameters
-  params = list(
-    "eta" = tuneGrid$eta[i],
-    "objective" = "multi:softprob",
-    "eval_metric" = "mlogloss",
-    "num_class" = nclass,
-    "gamma" = tuneGrid$gamma[i],
-    "max_depth" = tuneGrid$max_depth[i],
-    "subsample" = tuneGrid$subsample[i],
-    "colsample_bytree" = tuneGrid$colsample_bytree[i],
-    "alpha" = tuneGrid$alpha[i],
-    "min_child_weight" = tuneGrid$min_child_weight[i]
-  )
-  
-  # train model
-  model = xgb.train(
-    data = train_small,
-    params = params,
-    nrounds = 10
-    )
-  
-  # make predictions
-  preds = formatXgbProbs(model, newdat = val)
-  
-  # status update
-  cat(paste(i, "out of", nrow(tuneGrid), "models complete.\n"))
-
-  # return results from this iteration of 
-  return(
-    data.table(
-    eta = tuneGrid$eta[i],
-    gamma = tuneGrid$gamma[i],
-    max_depth = tuneGrid$max_depth[i],
-    subsample = tuneGrid$subsample[i],
-    colsample_bytree = tuneGrid$colsample_bytree[i],
-    alpha = tuneGrid$alpha[i],
-    min_child_weight = tuneGrid$min_child_weight[i],
-    mLogLoss = MLmetrics::MultiLogLoss(y_pred = preds,
-                        y_true = val_labels)
-    )
-  )
-  
-})
-
-# combine list of results to find the best paramaters
-results = data.table::rbindlist(tuning)
-
-# order by performance
-results = results[order(mLogLoss)]
-
-# write results to disk
-data.table::fwrite(results, "data/modeling_results.csv")
-
-
-# get best tune
-best_tune = results[1]
-```
-
-
-Here, we can further tune the model, but for now let's make another prediction to
-submit to kaggle.
 
 ```{r}
 
-```
+# define number of classes
+nclass = 4
 
-We are able to see that deeper trees with more iterations do better, and increasing the minimum split loss gives a slight edge. 
+# read in the params from best tune
+best_tune = data.table::fread("data/modeling_results.csv")
+best_tune = best_tune[1]
 
-
-***
-
-Now that the optimal parameters have been chosen, retrain the model on the entire training dataset.
-
-```{r}
-full_train = xgb.DMatrix(data.matrix(x_train),
-                         label = multiCodeVars(y_train$event))
+full_train = xgb.DMatrix(data.matrix(train$x_train),
+                         label = multiCodeVars(train$y_train$event))
 
 full_params = list(
   "objective" = "multi:softprob",
@@ -242,15 +59,21 @@ full_params = list(
   "eta" = best_tune$eta,
   "gamma" = best_tune$gamma,
   "max_depth" = best_tune$max_depth,
+  "colsample_bytree" = best_tune$colsample_bytree,
   "tree_method" = "exact"
   )
   
 full_model = xgb.train(data = full_train,
-                       nrounds = 15,
+                       nrounds = 100,
                        params = full_params)
+
+# save the model to disk for safety
+xgboost::xgb.save(full_model, "models/full_xgb.model")
 
 # remove unneeded objects for space
 rm(list = ls()[!ls() %in% c("full_model", "full_params", "best_tune")])
+source("R/processing.R")
+gc(verbose = FALSE)
 ```
 
 ***
@@ -258,37 +81,77 @@ rm(list = ls()[!ls() %in% c("full_model", "full_params", "best_tune")])
 Now that the model has been trained, read in the test data and predict on test.
 
 ```{r process test data}
+numrows = 17965143
+chunk_size = 3e6
+# test = fread("data/test.csv")
+# 
+test_preds = data.table::fread("data/test.csv",
+                               select = "id")
 
-test = fread("data/test.csv")
+# read in the lda model and lda columns
+load("data/lda_model.RData")
+
+```
+
+Write an lapply to process the test data in a chunk wise fashion
+
+```{r}
+testNames = names(data.table::fread("data/test.csv", nrows = 1))
+
+test = lapply(1:ceiling(numrows/chunk_size), function(i) {
+  
+  test_part = data.table::fread("data/test.csv",
+                                skip = 1 + ((i-1) * chunk_size),
+                                nrows = chunk_size,
+                                col.names = testNames)
+  
+  test_part = processTestData(test_part[, !"id"], lda_model = lda_mod,
+                              lda_cols = lda_cols)
+  
+  gc(verbose = FALSE)
+  
+  return(test_part)
+})
+
+test = data.table::rbindlist(test)
+
 ```
 
 
 We will initialize a data.table to store our predictions
 ```{r}
-test_preds = test[, "id"]
 ```
 
 
 ```{r }
-# get rid of experiment column
-test[, experiment := NULL]
+# # get rid of experiment column
+# test[, experiment := NULL]
+# 
+# # coerce classes to factor to code them properly
+# test = coerceClass(test, c("crew", "seat"), fun = as.factor)
+# 
+# # code nominal variables to start at 0
+# char_vars = names(test)[sapply(test, is.factor)]
+# test = test[, (char_vars) := lapply(.SD, multiCodeVars),
+#                   .SDcols = char_vars]
 
-# coerce classes to factor to code them properly
-test = coerceClass(test, c("crew", "seat"), fun = as.factor)
 
-# code nominal variables to start at 0
-char_vars = names(test)[sapply(test, is.factor)]
-test = test[, (char_vars) := lapply(.SD, multiCodeVars),
-                  .SDcols = char_vars]
 
 
 # convert test to a xgb.Dmatrix
-test = xgb.DMatrix(data = data.matrix(test[, !"id"]))
+test = xgb.DMatrix(data = data.matrix(test))
+
+# run garbage collection for space
+gc(verbose = FALSE)
 ```
 
 Finally predict on the test set and create predictions file.
 
 ```{r}
+
+# load in the trained model
+full_model = xgboost::xgb.load("models/full_xgb.model")
+
 probs = formatXgbProbs(full_model, newdat = test)
 
 test_results = setDT(cbind(test_preds, probs))
