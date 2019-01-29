@@ -88,6 +88,9 @@ processTrainData = function(data, y){
   
   dat[, experiment := NULL]
   
+  dat[, time_bin := cut(time, breaks = c(0, 90, 180, 270, 365),
+                        labels = FALSE)]
+  
   # coerce proper variables to categorical
   dat = coerceClass(dat, c("crew", "seat"),
                         fun = as.factor)
@@ -100,9 +103,9 @@ processTrainData = function(data, y){
   cols = cols[cols != "time"]
   
   # calculate vector of lower and upper bounds for each numeric column
-  lb = vapply(dat[, ..cols], function(x) mean(x) - 6*sd(x),
+  lb = vapply(dat[, ..cols], function(x) mean(x) - 4*sd(x),
               FUN.VALUE = numeric(1))
-  ub = vapply(dat[, ..cols], function(x) mean(x) + 6*sd(x),
+  ub = vapply(dat[, ..cols], function(x) mean(x) + 4*sd(x),
               FUN.VALUE = numeric(1))
   
   # get index of observations to remove
@@ -114,18 +117,18 @@ processTrainData = function(data, y){
   dat = dat[ind]
   y = y[ind]
   
-  # now put time back into cols
-  cols = c(cols, "time")
-  
-  # run LDA on numeric columns
-  lda = MASS::lda(dat[, ..cols],
-                  grouping = as.factor(y$event))
+  # # now put time back into cols
+  # cols = c(cols, "time")
+  # 
+  # # run LDA on numeric columns
+  # lda = MASS::lda(dat[, ..cols],
+  #                 grouping = as.factor(y$event))
   
   # fit lda to training data
-  preds = predict(lda, dat[, ..cols])
-  
-  # assign predictions to dat
-  dat = cbind(dat, preds$posterior)
+  # preds = predict(lda, dat[, ..cols])
+  # 
+  # # assign predictions to dat
+  # dat = cbind(dat, preds$posterior)
   
   # code variables to be numeric
   char_vars = names(dat)[sapply(dat, is.factor)]
@@ -136,14 +139,15 @@ processTrainData = function(data, y){
   # return processed data and lda model
   return(
     list(x_train = dat,
-         y_train = y,
-         lda_mod = lda,
-         lda_cols = cols)
+         y_train = y
+         # lda_mod = lda,
+         # lda_cols = cols
+         )
   )
   
 }
 
-processTestData = function(dat, lda_model, lda_cols){
+processTestData = function(dat){ #, lda_model, lda_cols
   
   # dat = data.table::copy(data)
   data.table::setDT(dat)
@@ -151,25 +155,18 @@ processTestData = function(dat, lda_model, lda_cols){
   # get rid of experiment column
   dat[, experiment := NULL]
   
+  dat[, time_bin := cut(time, breaks = c(0, 90, 180, 270, 365),
+                        labels = FALSE)]
+  
   cols = c("crew", "seat")
   # coerce classes to factor to code them properly
   dat[, (cols) := lapply(.SD, as.factor),
       .SDcols = c("crew", "seat")]
   
-  # names = names(dat)
+  # preds = predict(lda_model, dat[, ..lda_cols])$posterior
   # 
-  # # make predictions using lda
-  # dat = data.table::setDT(unlist(
-  #   list(dat,
-  #        predict(lda_model, dat[, ..lda_cols])$posterior
-  #        ), recursive = FALSE
-  #   ), check.names = TRUE)[]
-  # 
-  # data.table::setnames(dat, new = c(names, c("A", "B", "C", "D")))
-  preds = predict(lda_model, dat[, ..lda_cols])$posterior
-
-  # bind predictions to test data
-  dat = cbind(dat, preds)
+  # # bind predictions to test data
+  # dat = cbind(dat, preds)
   
   # code nominal variables to start at 0
   char_vars = names(dat)[sapply(dat, is.factor)]
