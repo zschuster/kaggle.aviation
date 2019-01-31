@@ -92,7 +92,7 @@ processTrainData = function(data, y){
                         labels = FALSE)]
   
   # coerce proper variables to categorical
-  dat = coerceClass(dat, c("crew", "seat"),
+  dat = coerceClass(dat, c("crew", "seat", "time_bin"),
                         fun = as.factor)
   
   # get the numeric columns (exluding time)
@@ -117,8 +117,23 @@ processTrainData = function(data, y){
   dat = dat[ind]
   y = y[ind]
   
-  # # now put time back into cols
-  # cols = c(cols, "time")
+  # now put time back into cols
+  cols = c(cols, "time")
+  
+  # scale numeric variables
+  means = vapply(dat[, ..cols], mean, FUN.VALUE = numeric(1L))
+  sds = vapply(dat[, ..cols], sd, FUN.VALUE = numeric(1L))
+  
+  dat[, (cols) := mapply(
+    function (mean, sd, vec) {
+      return((vec - mean) / sd)
+    },
+    mean = means,
+    sd = sds,
+    vec = .SD,
+    SIMPLIFY = FALSE
+  ),
+  .SDcols = cols]
   # 
   # # run LDA on numeric columns
   # lda = MASS::lda(dat[, ..cols],
@@ -139,15 +154,16 @@ processTrainData = function(data, y){
   # return processed data and lda model
   return(
     list(x_train = dat,
-         y_train = y
-         # lda_mod = lda,
-         # lda_cols = cols
+         y_train = y,
+         scale_means = means,
+         scale_sds = sds,
+         scale_cols = cols
          )
   )
   
 }
 
-processTestData = function(dat){ #, lda_model, lda_cols
+processTestData = function(dat, sc_means, sc_sds, scale_cols){ #, lda_model, lda_cols
   
   # dat = data.table::copy(data)
   data.table::setDT(dat)
@@ -158,15 +174,28 @@ processTestData = function(dat){ #, lda_model, lda_cols
   dat[, time_bin := cut(time, breaks = c(0, 90, 180, 270, 365),
                         labels = FALSE)]
   
-  cols = c("crew", "seat")
+  cols = c("crew", "seat", "time_bin")
   # coerce classes to factor to code them properly
   dat[, (cols) := lapply(.SD, as.factor),
-      .SDcols = c("crew", "seat")]
+      .SDcols = cols]
   
   # preds = predict(lda_model, dat[, ..lda_cols])$posterior
   # 
   # # bind predictions to test data
   # dat = cbind(dat, preds)
+  
+  # scale numeric columns the same as train
+  dat[, (scale_cols) := mapply(
+    function (mean, sd, vec) {
+      return((vec - mean) / sd)
+    },
+    mean = sc_means,
+    sd = sc_sds,
+    vec = .SD,
+    SIMPLIFY = FALSE
+  ),
+  .SDcols = scale_cols]
+  
   
   # code nominal variables to start at 0
   char_vars = names(dat)[sapply(dat, is.factor)]

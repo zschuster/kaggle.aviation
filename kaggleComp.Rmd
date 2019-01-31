@@ -26,9 +26,9 @@ train = processTrainData(data = x_train,
                          y = y_train)
 
 # save lda model and the columns to a .RData file
-lda_mod = train$lda_mod
-lda_cols = train$lda_cols
-save(lda_mod, lda_cols, file = "data/lda_model.RData")
+# lda_mod = train$lda_mod
+# lda_cols = train$lda_cols
+# save(lda_mod, lda_cols, file = "data/lda_model.RData")
 
 # remove big files for space 
 rm(x_train)
@@ -48,6 +48,9 @@ nclass = 4
 # read in the params from best tune
 best_tune = data.table::fread("data/modeling_results.csv")
 best_tune = best_tune[1]
+
+#define weights for xgboost
+wt = table()
 
 full_train = xgb.DMatrix(data.matrix(train$x_train),
                          label = multiCodeVars(train$y_train$event))
