@@ -27,13 +27,38 @@ readAndSplit(path = "data/train.csv",
 
 for now, run cleaning on our training set so we can replicate it on our validation set.
 
+We will split our training and test set it a way that we have the same proportions of reponse values in each set
+
 ```{r}
 set.seed(0127)
-train_ind = sample.int(n = nrow(x_train), size = .6 * nrow(x_train),
-                       replace = FALSE)
 
-train_small = x_train[train_ind]
-y_train_small = y_train[train_ind]
+train = setDT(cbind(x_train, y_train))
+
+train = split(train, by = "event")
+
+train_ind = lapply(train, function (dat) {
+  sample.int(n = nrow(dat), size = .5 * nrow(dat), replace = FALSE)
+})
+
+train_small = data.table::rbindlist(
+  mapply(function(dat, ind){
+    return(dat[ind])
+  }, dat = train, ind = train_ind, SIMPLIFY = FALSE)
+)
+
+test_small = data.table::rbindlist(
+  mapply(function(dat, ind){
+    return(dat[!ind])
+  }, dat = train, ind = train_ind, SIMPLIFY = FALSE)
+)
+
+y_train_small = train_small[, "event"]
+train_small = train_small[, !"event"]
+
+y_test_small = test_small[, "event"]
+test_small = test_small[, !"event"]
+
+rm(x_train, y_train)
 
 train = processTrainData(data = train_small,
                          y = y_train_small)
@@ -51,6 +76,11 @@ create xgb.DMatrix for training
 train_small = xgboost::xgb.DMatrix(data.matrix(train$x_train),
                                    label = multiCodeVars(train$y_train$event))
 
+# create val set
+val = processTestData(x_train[!train_ind], sc_means = train$scale_means,
+                      sc_sds = train$scale_sds, scale_cols = train$scale_cols)
+val = xgboost::xgb.DMatrix(data.matrix(val))
+
 ```
 
 
@@ -59,16 +89,28 @@ train_small = xgboost::xgb.DMatrix(data.matrix(train$x_train),
 create tuning grid
 
 ```{r, eval = FALSE}
+# tuneGrid = expand.grid(
+#   list(
+#     eta = c(.2, .4),
+#     gamma = c(0, .2),
+#     max_depth = c(4, 9),
+#     colsample_bytree = c(.9),
+#     # alpha = c(0, .3),
+#     min_child_weight = c(.8, 1.5)
+#   )
+# )
+
 tuneGrid = expand.grid(
   list(
-    eta = c(.2, .4),
-    gamma = c(0, .2),
-    max_depth = c(4, 9),
+    eta = c(.8, 1.2),
+    gamma = c(0),
+    max_depth = c(9),
     colsample_bytree = c(.9),
     # alpha = c(0, .3),
-    min_child_weight = c(.8, 1.5)
+    min_child_weight = c(.2)
   )
 )
+
 ```
 
 Run models for each parameter combination
@@ -90,9 +132,9 @@ tuning = lapply(seq_len(nrow(tuneGrid)), function(i){
     "num_class" = nclass,
     "gamma" = tuneGrid$gamma[i],
     "max_depth" = tuneGrid$max_depth[i],
-    "subsample" = tuneGrid$subsample[i],
+    # "subsample" = tuneGrid$subsample[i],
     "colsample_bytree" = tuneGrid$colsample_bytree[i],
-    "alpha" = tuneGrid$alpha[i],
+    # "alpha" = tuneGrid$alpha[i],
     "min_child_weight" = tuneGrid$min_child_weight[i]
   )
   
@@ -100,7 +142,7 @@ tuning = lapply(seq_len(nrow(tuneGrid)), function(i){
   model = xgb.train(
     data = train_small,
     params = params,
-    nrounds = 15
+    nrounds = 10
     )
   
   # make predictions
@@ -115,7 +157,7 @@ tuning = lapply(seq_len(nrow(tuneGrid)), function(i){
     eta = tuneGrid$eta[i],
     gamma = tuneGrid$gamma[i],
     max_depth = tuneGrid$max_depth[i],
-    subsample = tuneGrid$subsample[i],
+    # subsample = tuneGrid$subsample[i],
     colsample_bytree = tuneGrid$colsample_bytree[i],
     # alpha = tuneGrid$alpha[i],
     min_child_weight = tuneGrid$min_child_weight[i],

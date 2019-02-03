@@ -10,7 +10,7 @@ knitr::opts_chunk$set(echo = TRUE)
 source("R/processing.R")
 require(xgboost)
 library(data.table)
-library(MASS)
+# library(MASS)
 ```
 
 
@@ -21,14 +21,58 @@ readAndSplit(path = "data/train.csv",
              target_name = "event",
              name = "train")
 
+# here we will randomly remove rows from class A as it is well over weight.
+x_train[, event := y_train$event]
+# x_train = split(x_train, by = "event")
+# 
+# x_train$A = x_train$A[-(sample.int(n = nrow(x_train$A),
+#                                    nrow(x_train$A) * .6))]
+
+to_fac_int = c("crew", "seat")
+x_train[, (to_fac_int) := lapply(.SD, as.factor),
+        .SDcols = to_fac_int]
+
+fac_char = c("event", "experiment")
+x_train[, (fac_char) := lapply(.SD, as.factor),
+        .SDcols = fac_char]
+
+
+
+
+x_train = DMwR::SMOTE(event ~ .,
+                      data = x_train,
+                      perc.over = 500,
+                      perc.under = 300)
+                      
+x_train = DMwR::SMOTE(event ~ .,
+                      data = x_train,
+                      perc.over = 450,
+                      perc.under = 400)
+                      
+x_train[, (to_fac_int) := lapply(.SD, function(x)
+  as.integer(as.character(x))),
+  .SDcols = to_fac_int]
+  
+x_train[, (fac_char) := lapply(.SD, as.character),
+        .SDcols = fac_char]
+
+
+
+
+
+y_train = x_train[, "event"]
+x_train[, event := NULL]
 
 train = processTrainData(data = x_train,
                          y = y_train)
 
-# save lda model and the columns to a .RData file
-# lda_mod = train$lda_mod
-# lda_cols = train$lda_cols
-# save(lda_mod, lda_cols, file = "data/lda_model.RData")
+# save scaling params  and the columns to a .RData file
+scale_means = train$scale_means
+scale_sds = train$scale_sds
+scale_cols = train$scale_cols
+
+# save to disk for use in test data processing
+save(scale_means, scale_sds, scale_cols, file = "data/scale_vars.RData")
 
 # remove big files for space 
 rm(x_train)
@@ -46,11 +90,11 @@ train xgboost model
 nclass = 4
 
 # read in the params from best tune
-best_tune = data.table::fread("data/modeling_results.csv")
-best_tune = best_tune[1]
+# best_tune = data.table::fread("data/modeling_results.csv")
+# best_tune = best_tune[1]
 
 #define weights for xgboost
-wt = table()
+# wt = table()
 
 full_train = xgb.DMatrix(data.matrix(train$x_train),
                          label = multiCodeVars(train$y_train$event))
@@ -59,15 +103,16 @@ full_params = list(
   "objective" = "multi:softprob",
   "eval_metric" = "mlogloss",
   "num_class" = nclass,
-  "eta" = best_tune$eta,
-  "gamma" = best_tune$gamma,
-  "max_depth" = best_tune$max_depth,
-  "colsample_bytree" = best_tune$colsample_bytree,
-  "tree_method" = "exact"
-  )
+  "eta" = c(.3),
+  "gamma" = c(0),
+  "max_depth" = c(10),
+  "subsample" = .8,
+  "colsample_bytree" = .8,
+  "min_child_weight" = c(.6)
+)
   
 full_model = xgb.train(data = full_train,
-                       nrounds = 100,
+                       nrounds = 250,
                        params = full_params)
 
 # save the model to disk for safety
@@ -91,8 +136,8 @@ chunk_size = 3e6
 test_preds = data.table::fread("data/test.csv",
                                select = "id")
 
-# read in the lda model and lda columns
-load("data/lda_model.RData")
+# read in scale stuff
+load("data/scale_vars.RData")
 
 ```
 
@@ -108,8 +153,10 @@ test = lapply(1:ceiling(numrows/chunk_size), function(i) {
                                 nrows = chunk_size,
                                 col.names = testNames)
   
-  test_part = processTestData(test_part[, !"id"], lda_model = lda_mod,
-                              lda_cols = lda_cols)
+  test_part = processTestData(test_part[, !"id"],
+                              sc_means = scale_means,
+                              sc_sds = scale_sds,
+                              scale_cols = scale_cols)
   
   gc(verbose = FALSE)
   
@@ -148,12 +195,12 @@ test = xgb.DMatrix(data = data.matrix(test))
 gc(verbose = FALSE)
 ```
 
-Finally predict on the test set and create predictions file.
+Finally predict on the test set and create predictions file. 
 
 ```{r}
 
 # load in the trained model
-full_model = xgboost::xgb.load("models/full_xgb.model")
+# full_model = xgboost::xgb.load("models/full_xgb.model")
 
 probs = formatXgbProbs(full_model, newdat = test)
 
