@@ -7,10 +7,9 @@ output: html_document
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
-source("R/processing.R")
+library(Kaggle.PKG.Aviation)
 require(xgboost)
 library(data.table)
-# library(MASS)
 ```
 
 
@@ -23,42 +22,18 @@ readAndSplit(path = "data/train.csv",
 
 # here we will randomly remove rows from class A as it is well over weight.
 x_train[, event := y_train$event]
-# x_train = split(x_train, by = "event")
-# 
-# x_train$A = x_train$A[-(sample.int(n = nrow(x_train$A),
-#                                    nrow(x_train$A) * .6))]
 
-to_fac_int = c("crew", "seat")
-x_train[, (to_fac_int) := lapply(.SD, as.factor),
-        .SDcols = to_fac_int]
+x_train = split(x_train, by = "event")
+x_train = x_train[c("A", "B", "C", "D")]
 
-fac_char = c("event", "experiment")
-x_train[, (fac_char) := lapply(.SD, as.factor),
-        .SDcols = fac_char]
+rows = vapply(x_train, nrow, FUN.VALUE = integer(1))
+
+# drastically undersample data to have equal balanced classes
+x_train$A = x_train$A[sample.int(nrow(x_train$A), 1.2 * rows[["D"]])]
+x_train$C = x_train$C[sample.int(nrow(x_train$C), 1.1 * rows[["D"]])]
 
 
-
-
-x_train = DMwR::SMOTE(event ~ .,
-                      data = x_train,
-                      perc.over = 500,
-                      perc.under = 300)
-                      
-x_train = DMwR::SMOTE(event ~ .,
-                      data = x_train,
-                      perc.over = 450,
-                      perc.under = 400)
-                      
-x_train[, (to_fac_int) := lapply(.SD, function(x)
-  as.integer(as.character(x))),
-  .SDcols = to_fac_int]
-  
-x_train[, (fac_char) := lapply(.SD, as.character),
-        .SDcols = fac_char]
-
-
-
-
+x_train = data.table::rbindlist(x_train)
 
 y_train = x_train[, "event"]
 x_train[, event := NULL]
@@ -89,13 +64,6 @@ train xgboost model
 # define number of classes
 nclass = 4
 
-# read in the params from best tune
-# best_tune = data.table::fread("data/modeling_results.csv")
-# best_tune = best_tune[1]
-
-#define weights for xgboost
-# wt = table()
-
 full_train = xgb.DMatrix(data.matrix(train$x_train),
                          label = multiCodeVars(train$y_train$event))
 
@@ -103,16 +71,16 @@ full_params = list(
   "objective" = "multi:softprob",
   "eval_metric" = "mlogloss",
   "num_class" = nclass,
-  "eta" = c(.3),
+  "eta" = c(.05),
   "gamma" = c(0),
-  "max_depth" = c(10),
+  "max_depth" = c(5),
   "subsample" = .8,
   "colsample_bytree" = .8,
   "min_child_weight" = c(.6)
 )
   
 full_model = xgb.train(data = full_train,
-                       nrounds = 250,
+                       nrounds = 1499,
                        params = full_params)
 
 # save the model to disk for safety
@@ -120,7 +88,6 @@ xgboost::xgb.save(full_model, "models/full_xgb.model")
 
 # remove unneeded objects for space
 rm(list = ls()[!ls() %in% c("full_model", "full_params", "best_tune")])
-source("R/processing.R")
 gc(verbose = FALSE)
 ```
 
@@ -168,25 +135,7 @@ test = data.table::rbindlist(test)
 ```
 
 
-We will initialize a data.table to store our predictions
-```{r}
-```
-
-
 ```{r }
-# # get rid of experiment column
-# test[, experiment := NULL]
-# 
-# # coerce classes to factor to code them properly
-# test = coerceClass(test, c("crew", "seat"), fun = as.factor)
-# 
-# # code nominal variables to start at 0
-# char_vars = names(test)[sapply(test, is.factor)]
-# test = test[, (char_vars) := lapply(.SD, multiCodeVars),
-#                   .SDcols = char_vars]
-
-
-
 
 # convert test to a xgb.Dmatrix
 test = xgb.DMatrix(data = data.matrix(test))

@@ -38,9 +38,16 @@ set.seed(0127)
 train = setDT(cbind(x_train, y_train))
 
 train = split(train, by = "event")
+train = train[c("A", "B", "C", "D")]
+
+rows = vapply(train, nrow, FUN.VALUE = integer(1))
+
+# drastically undersample data to have equal balanced classes
+train$A = train$A[sample.int(nrow(train$A), 1.2 * rows[["D"]])]
+train$C = train$C[sample.int(nrow(train$C), 1.1 * rows[["D"]])]
 
 train_ind = lapply(train, function (dat) {
-  sample.int(n = nrow(dat), size = .03 * nrow(dat), replace = FALSE)
+  sample.int(n = nrow(dat), size = .5 * nrow(dat), replace = FALSE)
 })
 
 train = data.table::rbindlist(
@@ -49,27 +56,6 @@ train = data.table::rbindlist(
   }, dat = train, ind = train_ind, SIMPLIFY = FALSE)
 )
 
-to_fac_int = c("crew", "seat")
-train[, (to_fac_int) := lapply(.SD, as.factor),
-      .SDcols = to_fac_int]
-
-fac_char = c("event", "experiment")
-train[, (fac_char) := lapply(.SD, as.factor),
-      .SDcols = fac_char]
-
-
-
-
-train = DMwR::SMOTE(event ~ ., data = train,
-                   perc.over = 500, perc.under = 300)
-
-train = DMwR::SMOTE(event ~ ., data = train,
-                   perc.over = 450, perc.under = 400)
-
-train[, (to_fac_int) := lapply(.SD, function(x) as.integer(as.character(x))),
-      .SDcols = to_fac_int]
-
-train[, event := as.character(event)]
 
 
 
@@ -104,12 +90,12 @@ create tuning grid
 
 tuneGrid = expand.grid(
   list(
-    "eta" = c(.15),
+    "eta" = c(.15, .3),
     "gamma" = c(0),
     "max_depth" = c(5),
     "subsample" = .8,
     "colsample_bytree" = .8,
-    "min_child_weight" = c(1.2)
+    "min_child_weight" = c(.6, 1.2)
   )
 )
 
@@ -122,7 +108,7 @@ First we will fix the parameters in order to find the optimal # of trees
 
 ```{r}
 params =   list(
-    "eta" = c(.3),
+    "eta" = c(.05),
     "gamma" = c(0),
     "max_depth" = c(5),
     "subsample" = .8,
@@ -137,8 +123,8 @@ params[["num_class"]] = nclass
 model = xgb.cv(
   params = params,
   data = train,
-  nround = 400,
-  nfold = 5,
+  nround = 1500,
+  nfold = 4,
   early_stopping_rounds = 20,
   print_every_n = 10,
   maximize = FALSE
@@ -155,12 +141,12 @@ Next, we will tune max_depth and min_child_weight. We will drop nrounds for now 
 ```{r}
 tuneGrid = expand.grid(
   list(
-    "eta" = c(.3),
+    "eta" = c(.05),
     "gamma" = c(0),
-    "max_depth" = c(10),
+    "max_depth" = c(10, 6),
     "subsample" = .8,
     "colsample_bytree" = .8,
-    "min_child_weight" = c(.6)
+    "min_child_weight" = c(.6, 1.2)
   )
 )
 
