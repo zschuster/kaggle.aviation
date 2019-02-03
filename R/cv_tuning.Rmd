@@ -1,0 +1,308 @@
+---
+title: "Tuning via CV"
+author: "Zach Schuster"
+date: "February 1, 2019"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+source("R/processing.R")
+require(xgboost)
+library(data.table)
+```
+
+We will use cross validation on a subset of data to train models faster. Then we will use larger data to train on larger data. We'll start with 10% of the rows, which is still almost 500,000.
+
+This tuning methodology comes from [here](https://www.analyticsvidhya.com/blog/2016/03/complete-guide-parameter-tuning-xgboost-with-codes-python/)
+
+
+```{r}
+
+readAndSplit(path = "data/train.csv",
+             target_name = "event",
+             name = "train")
+
+# x_train = fread("data/train.csv")
+
+```
+
+
+for now, run cleaning on our training set so we can replicate it on our validation set.
+
+We will split our training and test set it a way that we have the same proportions of reponse values in each set
+
+```{r}
+set.seed(0127)
+
+train = setDT(cbind(x_train, y_train))
+
+train = split(train, by = "event")
+train = train[c("A", "B", "C", "D")]
+
+rows = vapply(train, nrow, FUN.VALUE = integer(1))
+
+# drastically undersample data to have equal balanced classes
+train$A = train$A[sample.int(nrow(train$A), 1.2 * rows[["D"]])]
+train$C = train$C[sample.int(nrow(train$C), 1.1 * rows[["D"]])]
+
+train_ind = lapply(train, function (dat) {
+  sample.int(n = nrow(dat), size = .5 * nrow(dat), replace = FALSE)
+})
+
+train = data.table::rbindlist(
+  mapply(function(dat, ind){
+    return(dat[ind])
+  }, dat = train, ind = train_ind, SIMPLIFY = FALSE)
+)
+
+
+
+
+y_train = train[, "event"]
+x_train = train[, !"event"]
+
+train = processTrainData(data = x_train,
+                         y = y_train)
+
+rm(x_train, y_train)
+
+
+```
+
+
+create xgb.DMatrix for training
+```{r}
+# for xgboost
+
+train = xgboost::xgb.DMatrix(data.matrix(train$x_train),
+                             label = multiCodeVars(train$y_train$event))
+
+
+```
+
+
+### Hyperparameter Tuning
+
+create tuning grid
+
+```{r, eval = FALSE}
+
+tuneGrid = expand.grid(
+  list(
+    "eta" = c(.15, .3),
+    "gamma" = c(0),
+    "max_depth" = c(5),
+    "subsample" = .8,
+    "colsample_bytree" = .8,
+    "min_child_weight" = c(.6, 1.2)
+  )
+)
+
+nclass = 4
+
+
+```
+
+First we will fix the parameters in order to find the optimal # of trees
+
+```{r}
+params =   list(
+    "eta" = c(.05),
+    "gamma" = c(0),
+    "max_depth" = c(5),
+    "subsample" = .8,
+    "colsample_bytree" = .8,
+    "min_child_weight" = c(1.2)
+  )
+
+params[["num_class"]] = nclass
+```
+
+```{r}
+model = xgb.cv(
+  params = params,
+  data = train,
+  nround = 1500,
+  nfold = 4,
+  early_stopping_rounds = 20,
+  print_every_n = 10,
+  maximize = FALSE
+)
+
+# we can find the best test error by looking at the eval table
+model$evaluation_log[order(test_merror_mean)][1:5]
+```
+
+here we see that our mean test error is still dropping after 500 iterations, but not by very much. 
+
+Next, we will tune max_depth and min_child_weight. We will drop nrounds for now to save time.
+
+```{r}
+tuneGrid = expand.grid(
+  list(
+    "eta" = c(.05),
+    "gamma" = c(0),
+    "max_depth" = c(10, 6),
+    "subsample" = .8,
+    "colsample_bytree" = .8,
+    "min_child_weight" = c(.6, 1.2)
+  )
+)
+
+best_results = data.table(NULL)
+
+for (i in 1:nrow(tuneGrid)) {
+  
+  params = list(
+  "eta" = tuneGrid$eta[i],
+  "objective" = "multi:softprob",
+  "eval_metric" = "mlogloss",
+  "num_class" = nclass,
+  "gamma" = tuneGrid$gamma[i],
+  "max_depth" = tuneGrid$max_depth[i],
+  "subsample" = tuneGrid$subsample[i],
+  "colsample_bytree" = tuneGrid$colsample_bytree[i],
+  # "alpha" = tuneGrid$alpha[i],
+  "min_child_weight" = tuneGrid$min_child_weight[i]
+  )
+  
+  model = xgb.cv(
+    params = params,
+    data = train,
+    nround = 273,
+    nfold = 5,
+    early_stopping_rounds = 20,
+    maximize = FALSE,
+    verbose = FALSE
+    )
+  
+  best_results = rbind(best_results,
+                       model$evaluation_log[order(test_mlogloss_mean)][1])
+  
+  print(i)
+
+}
+
+out = setDT(cbind(best_results, tuneGrid))[order(test_mlogloss_mean)]
+```
+
+
+
+
+
+
+Run models for each parameter combination
+
+```{r, eval = FALSE}
+
+
+
+tuning = lapply(seq_len(nrow(tuneGrid)), function(i){
+  
+  # create list of parameters
+  params = list(
+    "eta" = tuneGrid$eta[i],
+    "objective" = "multi:softprob",
+    "eval_metric" = "mlogloss",
+    "num_class" = nclass,
+    "gamma" = tuneGrid$gamma[i],
+    "max_depth" = tuneGrid$max_depth[i],
+    # "subsample" = tuneGrid$subsample[i],
+    "colsample_bytree" = tuneGrid$colsample_bytree[i],
+    # "alpha" = tuneGrid$alpha[i],
+    "min_child_weight" = tuneGrid$min_child_weight[i]
+  )
+  
+  # train model
+  model = xgb.train(
+    data = train_small,
+    params = params,
+    nrounds = 10
+    )
+  
+  # make predictions
+  preds = formatXgbProbs(model, newdat = val)
+  
+  # status update
+  cat(paste(i, "out of", nrow(tuneGrid), "models complete.\n"))
+
+  # return results from this iteration of 
+  return(
+    data.table(
+    eta = tuneGrid$eta[i],
+    gamma = tuneGrid$gamma[i],
+    max_depth = tuneGrid$max_depth[i],
+    # subsample = tuneGrid$subsample[i],
+    colsample_bytree = tuneGrid$colsample_bytree[i],
+    # alpha = tuneGrid$alpha[i],
+    min_child_weight = tuneGrid$min_child_weight[i],
+    mLogLoss = MLmetrics::MultiLogLoss(y_pred = preds,
+                        y_true = val_labels)
+    )
+  )
+  
+})
+
+# combine list of results to find the best paramaters
+results = data.table::rbindlist(tuning)
+
+# order by performance
+results = results[order(mLogLoss)]
+
+# write results to disk
+data.table::fwrite(results, "data/modeling_results.csv")
+
+```
+
+
+Create simple xgboost model
+
+```{r}
+
+nclass = 4
+
+best_tune = fread("data/modeling_results.csv")
+best_tune = best_tune[1, ]
+
+train_params = list(
+  "objective" = "multi:softprob",
+  "eval_metric" = "mlogloss",
+  "num_class" = nclass,
+  "eta" = best_tune$eta,
+  "gamma" = best_tune$gamma,
+  "colsample_bytree" = best_tune$colsample_bytree,
+  "max_depth" = best_tune$max_depth,
+  "tree_method" = "exact"
+  )
+
+
+set.seed(0127)
+xgb_train = xgboost::xgb.train(data = train_small,
+                               nround = 25,
+                               params = train_params)
+
+```
+
+
+Process our validation set
+
+```{r}
+
+val = x_train[!train_ind]
+
+val = processTestData(val, lda_mod = train$lda_mod,
+                      lda_cols = train$lda_cols)
+
+val = xgboost::xgb.DMatrix(data.matrix(val))
+
+# make predictions
+preds = formatXgbProbs(xgb_train, newdat = val)
+
+# check logloss
+MLmetrics::MultiLogLoss(preds,
+                        multiCodeVars(y_train[!train_ind]$event)
+                        )
+
+```
+
